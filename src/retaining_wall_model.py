@@ -1,4 +1,5 @@
 import ast
+import heapq
 import math
 from collections import Counter
 from pathlib import Path
@@ -102,7 +103,11 @@ def create_mesh(
     show_gui=True,
 ):
     """Create a quadrilateral surface mesh and write a Gmsh 2.2 file."""
-    gmsh.initialize()
+    # GUI analyses run this function from a QThread. Gmsh's default Python
+    # initializer installs a SIGINT handler, which Python only permits on the
+    # main thread. Disabling that optional handler keeps both CLI and threaded
+    # execution valid.
+    gmsh.initialize(interruptible=False)
 
     try:
         gmsh.option.setNumber("General.Terminal", 1)
@@ -129,7 +134,9 @@ def create_mesh(
 
 def read_msh_to_dataframe(msh_path):
     """Read Gmsh nodes and elements into one normalized DataFrame."""
-    gmsh.initialize()
+    # See create_mesh(): do not register Python signal handlers from a GUI
+    # worker thread.
+    gmsh.initialize(interruptible=False)
 
     try:
         gmsh.option.setNumber("General.Terminal", 1)
@@ -688,6 +695,36 @@ def apply_model_boundary_conditions(
     }
 
 
+def _convergence_diagnostics():
+    """Return the current OpenSees convergence-test iteration information."""
+    try:
+        iterations = int(ops.testIter())
+    except Exception:
+        iterations = 0
+    try:
+        raw_norms = [float(value) for value in ops.testNorms()]
+    except Exception:
+        raw_norms = []
+
+    used_count = min(max(iterations, 0), len(raw_norms))
+    iteration_norms = raw_norms[:used_count]
+    final_norm = iteration_norms[-1] if iteration_norms else math.nan
+    return iterations, final_norm, tuple(iteration_norms)
+
+
+def _maximum_soil_displacement(soil_node_tags):
+    maximum = -1.0
+    maximum_node = None
+    for node_tag in soil_node_tags:
+        ux = float(ops.nodeDisp(node_tag, 1))
+        uz = float(ops.nodeDisp(node_tag, 2))
+        magnitude = math.hypot(ux, uz)
+        if magnitude > maximum:
+            maximum = magnitude
+            maximum_node = node_tag
+    return maximum, maximum_node
+
+
 def run_gravity_analysis(
     model_info,
     boundary_info,
@@ -697,6 +734,7 @@ def run_gravity_analysis(
     time_series_tag=1,
     load_pattern_tag=1,
     hold_gravity_constant=True,
+    progress_callback=None,
 ):
     """Apply SSPquad body forces incrementally and solve gravity."""
     if number_of_steps <= 0:
@@ -740,32 +778,57 @@ def run_gravity_analysis(
     history = []
     for step in range(1, number_of_steps + 1):
         result = ops.analyze(1)
+        iterations, final_norm, iteration_norms = _convergence_diagnostics()
         if result != 0:
+            diagnostic = {
+                "phase": "Gravity",
+                "step": step,
+                "total_steps": number_of_steps,
+                "load_factor": float(ops.getTime()),
+                "iterations": iterations,
+                "convergence_norm": final_norm,
+                "iteration_norms": iteration_norms,
+                "tolerance": float(tolerance),
+                "maximum_iterations": int(maximum_iterations),
+                "converged": False,
+                "return_code": int(result),
+                "maximum_soil_displacement": math.nan,
+                "maximum_displacement_node": None,
+            }
+            if progress_callback is not None:
+                progress_callback(diagnostic)
             raise RuntimeError(
                 "Gravity analysis failed to converge.\n"
                 f"Step: {step} of {number_of_steps}\n"
                 f"Committed load factor: {ops.getTime():.6g}\n"
+                f"Convergence iterations: {iterations}\n"
+                f"Final displacement-increment norm: {final_norm:.6g}\n"
+                f"Requested tolerance: {tolerance:.6g}\n"
                 f"OpenSees return code: {result}"
             )
 
-        max_displacement = -1.0
-        max_displacement_node = None
-        for node_tag in soil_node_tags:
-            ux = float(ops.nodeDisp(node_tag, 1))
-            uy = float(ops.nodeDisp(node_tag, 2))
-            magnitude = math.hypot(ux, uy)
-            if magnitude > max_displacement:
-                max_displacement = magnitude
-                max_displacement_node = node_tag
-
-        history.append(
-            {
-                "step": step,
-                "load_factor": float(ops.getTime()),
-                "maximum_soil_displacement": max_displacement,
-                "maximum_displacement_node": max_displacement_node,
-            }
+        max_displacement, max_displacement_node = (
+            _maximum_soil_displacement(soil_node_tags)
         )
+
+        diagnostic = {
+            "phase": "Gravity",
+            "step": step,
+            "total_steps": number_of_steps,
+            "load_factor": float(ops.getTime()),
+            "iterations": iterations,
+            "convergence_norm": final_norm,
+            "iteration_norms": iteration_norms,
+            "tolerance": float(tolerance),
+            "maximum_iterations": int(maximum_iterations),
+            "converged": True,
+            "return_code": 0,
+            "maximum_soil_displacement": max_displacement,
+            "maximum_displacement_node": max_displacement_node,
+        }
+        history.append(diagnostic)
+        if progress_callback is not None:
+            progress_callback(dict(diagnostic))
 
     ops.reactions()
     support_nodes = boundary_info["support_soil_node_tags"]
@@ -1014,6 +1077,272 @@ def apply_point_loads(
     }
 
 
+def _exterior_soil_path(mesh_df, start_node, end_node):
+    """Return the shortest connected exterior-edge path between two nodes."""
+    start_node = int(start_node)
+    end_node = int(end_node)
+    coordinates = _node_coordinate_map(mesh_df)
+    edge_counts = Counter()
+
+    for _, connectivity in _surface_quad_rows(mesh_df):
+        for index, node_i in enumerate(connectivity):
+            node_j = connectivity[(index + 1) % len(connectivity)]
+            edge_counts[tuple(sorted((int(node_i), int(node_j))))] += 1
+
+    boundary_edges = [edge for edge, count in edge_counts.items() if count == 1]
+    boundary_nodes = {tag for edge in boundary_edges for tag in edge}
+    for tag, label in ((start_node, "start"), (end_node, "end")):
+        if tag not in boundary_nodes:
+            raise ValueError(
+                f"Soil line-load {label} node {tag} is not on the exterior "
+                "boundary of the SSPquad mesh."
+            )
+
+    adjacency = {tag: [] for tag in boundary_nodes}
+    for node_i, node_j in boundary_edges:
+        x_i, _, z_i = coordinates[node_i]
+        x_j, _, z_j = coordinates[node_j]
+        length = math.hypot(x_j - x_i, z_j - z_i)
+        if length <= 0.0:
+            continue
+        adjacency[node_i].append((node_j, length))
+        adjacency[node_j].append((node_i, length))
+
+    distances = {start_node: 0.0}
+    previous = {}
+    queue = [(0.0, start_node)]
+    while queue:
+        distance, node = heapq.heappop(queue)
+        if distance > distances.get(node, math.inf):
+            continue
+        if node == end_node:
+            break
+        for neighbour, edge_length in adjacency[node]:
+            candidate = distance + edge_length
+            if candidate < distances.get(neighbour, math.inf):
+                distances[neighbour] = candidate
+                previous[neighbour] = node
+                heapq.heappush(queue, (candidate, neighbour))
+
+    if end_node not in distances:
+        raise ValueError(
+            f"No connected exterior soil path exists between nodes "
+            f"{start_node} and {end_node}."
+        )
+
+    path = [end_node]
+    while path[-1] != start_node:
+        path.append(previous[path[-1]])
+    path.reverse()
+    return path
+
+
+def _beam_path(beam_info, start_node, end_node):
+    """Return beam nodes and elements along the unique free-face chain."""
+    start_node = int(start_node)
+    end_node = int(end_node)
+    beam_nodes = {int(tag) for tag in beam_info["beam_node_tags"]}
+    for tag, label in ((start_node, "start"), (end_node, "end")):
+        if tag not in beam_nodes:
+            raise ValueError(
+                f"Beam line-load {label} node {tag} is not a free-face "
+                "beam node."
+            )
+
+    adjacency = {tag: [] for tag in beam_nodes}
+    for element_tag, (node_i, node_j) in beam_info["beam_connectivity"].items():
+        element_tag = int(element_tag)
+        node_i = int(node_i)
+        node_j = int(node_j)
+        adjacency[node_i].append((node_j, element_tag))
+        adjacency[node_j].append((node_i, element_tag))
+
+    previous = {start_node: (None, None)}
+    queue = [start_node]
+    while queue:
+        node = queue.pop(0)
+        if node == end_node:
+            break
+        for neighbour, element_tag in adjacency[node]:
+            if neighbour not in previous:
+                previous[neighbour] = (node, element_tag)
+                queue.append(neighbour)
+
+    if end_node not in previous:
+        raise ValueError(
+            f"No connected beam path exists between nodes "
+            f"{start_node} and {end_node}."
+        )
+
+    nodes = [end_node]
+    elements = []
+    while nodes[-1] != start_node:
+        parent, element_tag = previous[nodes[-1]]
+        elements.append(element_tag)
+        nodes.append(parent)
+    nodes.reverse()
+    elements.reverse()
+    return nodes, elements
+
+
+def apply_line_loads(
+    line_loads,
+    mesh_df,
+    model_info,
+    beam_info,
+    time_series_tag=3,
+    load_pattern_tag=3,
+    time_series_type="Linear",
+):
+    """Apply uniform or trapezoidal boundary loads in global X or Z.
+
+    Each load is a dictionary with ``target`` (``"Soil"`` or ``"Beam"``),
+    ``start_node``, ``end_node``, ``start_magnitude``, ``end_magnitude`` and
+    ``direction`` (``"x"`` or ``"z"``). Intensities use force per length.
+
+    Soil boundary tractions are converted to consistent nodal forces on each
+    exterior SSPquad edge. Beam loads are applied with ``eleLoad`` to every
+    elasticBeamColumn on the selected free-face segment. A trapezoidal beam
+    load is represented by the exact average intensity on each member.
+    """
+    if not line_loads:
+        raise ValueError("line_loads cannot be empty.")
+
+    coordinates = _node_coordinate_map(mesh_df)
+    beam_to_soil = {
+        int(beam_node): int(soil_node)
+        for soil_node, beam_node in beam_info["soil_to_beam_node"].items()
+    }
+    prepared = []
+
+    for index, definition in enumerate(line_loads, start=1):
+        required = {
+            "target",
+            "start_node",
+            "end_node",
+            "start_magnitude",
+            "end_magnitude",
+            "direction",
+        }
+        missing = required - set(definition)
+        if missing:
+            raise ValueError(
+                f"Line load {index} is missing: {', '.join(sorted(missing))}."
+            )
+
+        target = str(definition["target"]).strip().lower()
+        if target not in {"soil", "beam"}:
+            raise ValueError(f"Line load {index}: target must be Soil or Beam.")
+        direction = str(definition["direction"]).strip().lower()
+        if direction not in {"x", "z"}:
+            raise ValueError(f"Line load {index}: direction must be x or z.")
+
+        start_node = int(definition["start_node"])
+        end_node = int(definition["end_node"])
+        q_start = float(definition["start_magnitude"])
+        q_end = float(definition["end_magnitude"])
+        if start_node == end_node:
+            raise ValueError(f"Line load {index}: start and end nodes must differ.")
+        if not all(math.isfinite(value) for value in (q_start, q_end)):
+            raise ValueError(f"Line load {index}: intensities must be finite.")
+
+        if target == "soil":
+            path_nodes = _exterior_soil_path(mesh_df, start_node, end_node)
+            path_elements = []
+            path_coordinates = [coordinates[tag] for tag in path_nodes]
+        else:
+            path_nodes, path_elements = _beam_path(
+                beam_info,
+                start_node,
+                end_node,
+            )
+            path_coordinates = [coordinates[beam_to_soil[tag]] for tag in path_nodes]
+
+        edge_lengths = [
+            math.hypot(
+                path_coordinates[i + 1][0] - path_coordinates[i][0],
+                path_coordinates[i + 1][2] - path_coordinates[i][2],
+            )
+            for i in range(len(path_nodes) - 1)
+        ]
+        total_length = sum(edge_lengths)
+        if total_length <= 0.0:
+            raise ValueError(f"Line load {index}: selected path has zero length.")
+
+        stations = [0.0]
+        for length in edge_lengths:
+            stations.append(stations[-1] + length)
+        intensities = [
+            q_start + (q_end - q_start) * station / total_length
+            for station in stations
+        ]
+        prepared.append(
+            {
+                "target": target,
+                "start_node": start_node,
+                "end_node": end_node,
+                "direction": direction,
+                "start_magnitude": q_start,
+                "end_magnitude": q_end,
+                "path_nodes": path_nodes,
+                "path_elements": path_elements,
+                "edge_lengths": edge_lengths,
+                "stations": stations,
+                "intensities": intensities,
+                "total_length": total_length,
+                "resultant": 0.5 * (q_start + q_end) * total_length,
+            }
+        )
+
+    ops.timeSeries(time_series_type, int(time_series_tag))
+    ops.pattern("Plain", int(load_pattern_tag), int(time_series_tag))
+
+    soil_nodal_forces = {}
+    for load_data in prepared:
+        direction_index = 0 if load_data["direction"] == "x" else 1
+        if load_data["target"] == "soil":
+            for edge_index, length in enumerate(load_data["edge_lengths"]):
+                node_i = load_data["path_nodes"][edge_index]
+                node_j = load_data["path_nodes"][edge_index + 1]
+                q_i = load_data["intensities"][edge_index]
+                q_j = load_data["intensities"][edge_index + 1]
+                force_i = length * (2.0 * q_i + q_j) / 6.0
+                force_j = length * (q_i + 2.0 * q_j) / 6.0
+                soil_nodal_forces.setdefault(node_i, [0.0, 0.0])[direction_index] += force_i
+                soil_nodal_forces.setdefault(node_j, [0.0, 0.0])[direction_index] += force_j
+        else:
+            for edge_index, element_tag in enumerate(load_data["path_elements"]):
+                q_average = 0.5 * (
+                    load_data["intensities"][edge_index]
+                    + load_data["intensities"][edge_index + 1]
+                )
+                # A vertical member's local x is global +Z and local y is
+                # global -X. OpenSees 2D beamUniform arguments are Wy, Wx.
+                wy = -q_average if load_data["direction"] == "x" else 0.0
+                wx = q_average if load_data["direction"] == "z" else 0.0
+                ops.eleLoad(
+                    "-ele",
+                    int(element_tag),
+                    "-type",
+                    "-beamUniform",
+                    float(wy),
+                    float(wx),
+                )
+
+    for node_tag, force_vector in soil_nodal_forces.items():
+        ops.load(int(node_tag), *map(float, force_vector))
+
+    return {
+        "time_series_tag": int(time_series_tag),
+        "load_pattern_tag": int(load_pattern_tag),
+        "time_series_type": time_series_type,
+        "loads": prepared,
+        "soil_nodal_forces": {
+            int(tag): tuple(values) for tag, values in soil_nodal_forces.items()
+        },
+    }
+
+
 def run_point_load_analysis(
     model_info,
     beam_info,
@@ -1022,8 +1351,9 @@ def run_point_load_analysis(
     tolerance=1.0e-5,
     maximum_iterations=100,
     hold_point_loads_constant=False,
+    progress_callback=None,
 ):
-    """Run the post-gravity static analysis for active point loads."""
+    """Run the post-gravity static analysis for all active load patterns."""
     if number_of_steps <= 0:
         raise ValueError("number_of_steps must be positive.")
 
@@ -1047,32 +1377,57 @@ def run_point_load_analysis(
     history = []
     for step in range(1, number_of_steps + 1):
         result = ops.analyze(1)
+        iterations, final_norm, iteration_norms = _convergence_diagnostics()
         if result != 0:
+            diagnostic = {
+                "phase": "Applied loads",
+                "step": step,
+                "total_steps": number_of_steps,
+                "load_factor": float(ops.getTime()),
+                "iterations": iterations,
+                "convergence_norm": final_norm,
+                "iteration_norms": iteration_norms,
+                "tolerance": float(tolerance),
+                "maximum_iterations": int(maximum_iterations),
+                "converged": False,
+                "return_code": int(result),
+                "maximum_soil_displacement": math.nan,
+                "maximum_displacement_node": None,
+            }
+            if progress_callback is not None:
+                progress_callback(diagnostic)
             raise RuntimeError(
-                "Point-load analysis failed to converge.\n"
+                "Post-gravity static analysis failed to converge.\n"
                 f"Step: {step} of {number_of_steps}\n"
                 f"Committed load factor: {ops.getTime():.6g}\n"
+                f"Convergence iterations: {iterations}\n"
+                f"Final displacement-increment norm: {final_norm:.6g}\n"
+                f"Requested tolerance: {tolerance:.6g}\n"
                 f"OpenSees return code: {result}"
             )
 
-        max_displacement = -1.0
-        max_displacement_node = None
-        for node_tag in soil_node_tags:
-            ux = float(ops.nodeDisp(node_tag, 1))
-            uz = float(ops.nodeDisp(node_tag, 2))
-            magnitude = math.hypot(ux, uz)
-            if magnitude > max_displacement:
-                max_displacement = magnitude
-                max_displacement_node = node_tag
-
-        history.append(
-            {
-                "step": step,
-                "load_factor": float(ops.getTime()),
-                "maximum_soil_displacement": max_displacement,
-                "maximum_displacement_node": max_displacement_node,
-            }
+        max_displacement, max_displacement_node = (
+            _maximum_soil_displacement(soil_node_tags)
         )
+
+        diagnostic = {
+            "phase": "Applied loads",
+            "step": step,
+            "total_steps": number_of_steps,
+            "load_factor": float(ops.getTime()),
+            "iterations": iterations,
+            "convergence_norm": final_norm,
+            "iteration_norms": iteration_norms,
+            "tolerance": float(tolerance),
+            "maximum_iterations": int(maximum_iterations),
+            "converged": True,
+            "return_code": 0,
+            "maximum_soil_displacement": max_displacement,
+            "maximum_displacement_node": max_displacement_node,
+        }
+        history.append(diagnostic)
+        if progress_callback is not None:
+            progress_callback(dict(diagnostic))
 
     ops.reactions()
     support_nodes = boundary_info["support_soil_node_tags"]
@@ -1106,6 +1461,7 @@ def run_point_load_analysis(
         "converged": True,
         "number_of_steps": number_of_steps,
         "final_point_load_factor": final_load_factor,
+        "final_load_factor": final_load_factor,
         "point_loads_held_constant": hold_point_loads_constant,
         "horizontal_support_reaction": (
             soil_horizontal_reaction + beam_horizontal_reaction
@@ -1148,12 +1504,17 @@ def run_complete_analysis_case(
     beam_thickness,
     beam_width,
     point_loads=None,
+    line_loads=None,
     number_of_gravity_steps=100,
     number_of_point_load_steps=100,
     point_load_time_series_tag=2,
     point_load_pattern_tag=2,
+    line_load_time_series_tag=3,
+    line_load_pattern_tag=3,
+    coordinate_tolerance=1.0e-6,
     tolerance=1.0e-5,
     maximum_iterations=100,
+    progress_callback=None,
 ):
     """Build and solve one complete elastic or Drucker-Prager case.
 
@@ -1184,13 +1545,22 @@ def run_complete_analysis_case(
         beam_thickness=beam_thickness,
         out_of_plane_width=beam_width,
         transformation_tag=1,
+        coordinate_tolerance=coordinate_tolerance,
     )
 
     boundary_info = apply_model_boundary_conditions(
         mesh_df=mesh_df,
         model_info=model_info,
         beam_info=beam_info,
+        coordinate_tolerance=coordinate_tolerance,
     )
+
+    def case_progress(diagnostic):
+        if progress_callback is not None:
+            enriched = dict(diagnostic)
+            enriched["case_name"] = str(case_name)
+            enriched["material_model"] = str(material_model)
+            progress_callback(enriched)
 
     gravity_results = run_gravity_analysis(
         model_info=model_info,
@@ -1198,10 +1568,12 @@ def run_complete_analysis_case(
         number_of_steps=number_of_gravity_steps,
         tolerance=tolerance,
         maximum_iterations=maximum_iterations,
+        progress_callback=case_progress,
     )
     gravity_beam_local_forces = get_beam_local_forces(beam_info)
 
     point_load_info = None
+    line_load_info = None
     point_results = None
     if point_loads:
         point_load_info = apply_point_loads(
@@ -1211,6 +1583,17 @@ def run_complete_analysis_case(
             time_series_tag=point_load_time_series_tag,
             load_pattern_tag=point_load_pattern_tag,
         )
+    if line_loads:
+        line_load_info = apply_line_loads(
+            line_loads=line_loads,
+            mesh_df=mesh_df,
+            model_info=model_info,
+            beam_info=beam_info,
+            time_series_tag=line_load_time_series_tag,
+            load_pattern_tag=line_load_pattern_tag,
+        )
+
+    if point_loads or line_loads:
         point_results = run_point_load_analysis(
             model_info=model_info,
             beam_info=beam_info,
@@ -1218,6 +1601,7 @@ def run_complete_analysis_case(
             number_of_steps=number_of_point_load_steps,
             tolerance=tolerance,
             maximum_iterations=maximum_iterations,
+            progress_callback=case_progress,
         )
         final_beam_local_forces = point_results["beam_local_forces"]
         final_results = point_results
@@ -1240,6 +1624,7 @@ def run_complete_analysis_case(
         "gravity_results": gravity_results,
         "gravity_beam_local_forces": gravity_beam_local_forces,
         "point_load_info": point_load_info,
+        "line_load_info": line_load_info,
         "point_results": point_results,
         "final_results": final_results,
         "final_beam_local_forces": final_beam_local_forces,
