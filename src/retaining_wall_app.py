@@ -6,18 +6,20 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
+import license_manager
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 from matplotlib.collections import PolyCollection
 from matplotlib.figure import Figure
 from matplotlib.patches import FancyArrowPatch
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QFont
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -30,6 +32,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -47,11 +50,132 @@ from PySide6.QtWidgets import (
 
 
 APP_NAME = "Retaining Wall Soil Analysis"
-CONFIG_VERSION = 1
+APP_VERSION = "1.0.0"
+AUTHOR_NAME = "Mishal Mohanlal"
+APP_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+LOGO_PATH = APP_DIR / "company_logo.png"
+CONFIG_VERSION = 2
 DEFAULT_PROJECT_DIR = Path(
     r"C:\Users\MishalMohanlal\OneDrive - The Project Company\Documents"
     r"\GitHub\retaining wall loadings"
 )
+
+
+class LicenseActivationDialog(QDialog):
+    def __init__(self, status_message, parent=None):
+        super().__init__(parent)
+        self.license_payload = None
+        self.setWindowTitle(f"{APP_NAME} - License Activation")
+        self.resize(820, 670)
+        self.setMinimumSize(680, 580)
+        if LOGO_PATH.is_file():
+            self.setWindowIcon(QIcon(str(LOGO_PATH)))
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(10)
+
+        logo = QLabel()
+        logo.setObjectName("ActivationLogo")
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if LOGO_PATH.is_file():
+            pixmap = QPixmap(str(LOGO_PATH))
+            logo.setPixmap(
+                pixmap.scaled(
+                    560,
+                    120,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        layout.addWidget(logo)
+
+        heading = QLabel("License Activation")
+        heading.setObjectName("ActivationTitle")
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(heading)
+
+        identity = QLabel(
+            f"Author: {AUTHOR_NAME}    |    Version: {APP_VERSION}"
+        )
+        identity.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(identity)
+
+        status = QLabel(str(status_message))
+        status.setWordWrap(True)
+        status.setObjectName("WarningLabel")
+        layout.addWidget(status)
+
+        layout.addWidget(QLabel("Activation request (send this to the license administrator)"))
+        self.activation_request = QPlainTextEdit()
+        self.activation_request.setReadOnly(True)
+        self.activation_request.setPlainText(
+            license_manager.create_activation_request()
+        )
+        self.activation_request.setMaximumHeight(125)
+        layout.addWidget(self.activation_request)
+
+        copy_button = QPushButton("Copy Activation Request")
+        copy_button.clicked.connect(self.copy_activation_request)
+        layout.addWidget(copy_button, 0, Qt.AlignmentFlag.AlignLeft)
+
+        layout.addWidget(QLabel("License code"))
+        self.license_code = QPlainTextEdit()
+        self.license_code.setPlaceholderText(
+            "Paste the signed license code supplied by the administrator"
+        )
+        self.license_code.setMaximumHeight(140)
+        layout.addWidget(self.license_code)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel_button = QPushButton("Exit")
+        cancel_button.clicked.connect(self.reject)
+        buttons.addWidget(cancel_button)
+        activate_button = QPushButton("Activate")
+        activate_button.clicked.connect(self.activate)
+        buttons.addWidget(activate_button)
+        layout.addLayout(buttons)
+
+        self.setStyleSheet(
+            """
+            QDialog { background: #F4F4F4; color: #183148; font-family: 'Segoe UI'; font-size: 10pt; }
+            QLabel#ActivationLogo { background: white; border: 1px solid #EAEAEA; border-radius: 6px; padding: 10px; }
+            QLabel#ActivationTitle { color: #006A4F; font-size: 18pt; font-weight: 700; }
+            QLabel#WarningLabel { background: #FFF9E8; border: 1px solid #C8AE3E; border-radius: 5px; padding: 8px; color: #183148; }
+            QPlainTextEdit { background: white; border: 1px solid #C8AE3E; border-radius: 4px; padding: 5px; }
+            QPushButton { background: #006A4F; color: white; border: none; border-radius: 4px; padding: 8px 14px; font-weight: 600; }
+            QPushButton:hover { background: #00926D; }
+            QPushButton:pressed { background: #004655; }
+            """
+        )
+
+    @Slot()
+    def copy_activation_request(self):
+        QApplication.clipboard().setText(
+            self.activation_request.toPlainText().strip()
+        )
+        QMessageBox.information(
+            self,
+            "Activation request copied",
+            "The activation request has been copied to the clipboard.",
+        )
+
+    @Slot()
+    def activate(self):
+        code = self.license_code.toPlainText().strip()
+        if not code:
+            QMessageBox.warning(self, "License code required", "Paste a license code first.")
+            return
+        try:
+            payload = license_manager.verify_license_code(code, APP_DIR)
+            license_manager.save_license_code(code)
+        except Exception as exc:
+            QMessageBox.critical(self, "Activation failed", str(exc))
+            return
+        self.license_payload = payload
+        QMessageBox.information(self, "Activated", "The license has been activated successfully.")
+        self.accept()
 
 
 class PathSelector(QWidget):
@@ -294,21 +418,10 @@ class AnalysisWorker(QObject):
         data = dict(diagnostic)
         case_name = data.get("case_name", "")
         phase = data.get("phase", "")
-        elastic_enabled = bool(
-            self.configuration["soil"]["run_elastic_comparison"]
-        )
-        if elastic_enabled:
-            ranges = {
-                ("Elastic", "Gravity"): (20, 34),
-                ("Elastic", "Applied loads"): (34, 55),
-                ("Drucker-Prager", "Gravity"): (58, 72),
-                ("Drucker-Prager", "Applied loads"): (72, 88),
-            }
-        else:
-            ranges = {
-                ("Drucker-Prager", "Gravity"): (20, 52),
-                ("Drucker-Prager", "Applied loads"): (52, 88),
-            }
+        ranges = {
+            ("Drucker-Prager", "Gravity"): (20, 52),
+            ("Drucker-Prager", "Applied loads"): (52, 88),
+        }
         start, end = ranges.get((case_name, phase), (20, 88))
         total_steps = max(int(data.get("total_steps", 1)), 1)
         fraction = min(max(float(data.get("step", 0)) / total_steps, 0.0), 1.0)
@@ -486,33 +599,15 @@ class AnalysisWorker(QObject):
                 "progress_callback": self._forward_convergence,
             }
 
-            elastic_case = None
-            if soil["run_elastic_comparison"]:
-                self.progress.emit(30, "Solving ElasticIsotropic comparison")
-                elastic_case = solver.run_complete_analysis_case(
-                    case_name="Elastic",
-                    material_model="elastic",
-                    **common,
-                )
-                self.progress.emit(58, "Elastic model converged")
-
-            self.progress.emit(62, "Solving Drucker-Prager model")
+            self.progress.emit(20, "Solving Drucker-Prager model")
             nonlinear_case = solver.run_complete_analysis_case(
                 case_name="Drucker-Prager",
                 material_model="drucker_prager",
                 **common,
             )
-            self.progress.emit(88, "Preparing comparison results")
+            self.progress.emit(88, "Preparing results")
 
-            cases = [case for case in (elastic_case, nonlinear_case) if case]
-            comparison_records = []
-            comparison = None
-            if elastic_case is not None:
-                comparison = solver.create_elastic_nonlinear_comparison(
-                    elastic_case,
-                    nonlinear_case,
-                )
-                comparison_records = comparison.reset_index().to_dict("records")
+            cases = [nonlinear_case]
 
             summaries = [self._case_summary(solver, case) for case in cases]
             profiles = {
@@ -550,15 +645,57 @@ class AnalysisWorker(QObject):
                 json.dumps(self.configuration, indent=2),
                 encoding="utf-8",
             )
-            if comparison is not None:
-                comparison.to_csv(
-                    output_directory / "elastic_vs_drucker_prager.csv"
-                )
             summary_frame = solver.pd.DataFrame(summaries)
             summary_frame.to_csv(output_directory / "analysis_summary.csv", index=False)
             solver.pd.DataFrame(convergence_records).to_csv(
                 output_directory / "convergence_history.csv",
                 index=False,
+            )
+            gravity = nonlinear_case["gravity_results"]
+            gravity_step = gravity["history"][-1]
+            final = nonlinear_case["final_results"]
+            final_step = final["history"][-1]
+            maximum_shear, maximum_moment = solver._maximum_beam_actions(
+                nonlinear_case["final_beam_local_forces"]
+            )
+            result_frame = solver.pd.DataFrame(
+                [
+                    ("Gravity maximum soil displacement", "mm", gravity_step["maximum_soil_displacement"]),
+                    ("Gravity beam-base moment magnitude", "N.mm", abs(gravity["beam_base_moment_reaction"])),
+                    ("Final maximum soil displacement", "mm", final_step["maximum_soil_displacement"]),
+                    ("Final horizontal support reaction", "N", final["horizontal_support_reaction"]),
+                    ("Final vertical support reaction", "N", final["vertical_support_reaction"]),
+                    ("Final beam-base moment magnitude", "N.mm", abs(final["beam_base_moment_reaction"])),
+                    ("Final maximum beam shear magnitude", "N", maximum_shear),
+                    ("Final maximum beam moment magnitude", "N.mm", maximum_moment),
+                ],
+                columns=["Result", "Unit", "Value"],
+            )
+            report_lines = [
+                "Results",
+                "",
+                f"Author: {AUTHOR_NAME}",
+                f"Version: {APP_VERSION}",
+                "Material model: Drucker-Prager",
+                "Unit system: N, mm and seconds",
+                f"Mesh file: {mesh_path}",
+                "",
+                result_frame.to_string(
+                    index=False,
+                    na_rep="-",
+                    float_format=lambda value: f"{value:.6g}",
+                ),
+            ]
+            report_lines.extend(
+                [
+                    "",
+                    "Convergence history: convergence_history.csv",
+                    "Configuration: analysis_configuration.json",
+                ]
+            )
+            (output_directory / "analysis_results.txt").write_text(
+                "\n".join(report_lines) + "\n",
+                encoding="utf-8",
             )
 
             self.progress.emit(100, "Analysis complete")
@@ -569,7 +706,6 @@ class AnalysisWorker(QObject):
                     "cases": cases,
                     "summaries": summaries,
                     "profiles": profiles,
-                    "comparison_records": comparison_records,
                     "output_directory": str(output_directory),
                 }
             )
@@ -960,30 +1096,30 @@ class AnalysisResultsCanvas(FigureCanvasQTAgg):
                 )
                 all_shear.extend(shear_values)
                 all_moment.extend(moment_values)
-                shear_axis.plot(shear_values, z_values, color="#187a72", linewidth=2)
+                shear_axis.plot(shear_values, z_values, color="#006A4F", linewidth=2)
                 shear_axis.fill_betweenx(
                     z_values,
                     (0.0, 0.0),
                     shear_values,
-                    color="#4db6ac",
+                    color="#00926D",
                     alpha=0.28,
                 )
                 moment_axis.plot(
                     moment_values,
                     z_values,
-                    color="#7756a5",
+                    color="#C8AE3E",
                     linewidth=2,
                 )
                 moment_axis.fill_betweenx(
                     z_values,
                     (0.0, 0.0),
                     moment_values,
-                    color="#9b7bc4",
+                    color="#DFC869",
                     alpha=0.28,
                 )
 
-            shear_axis.set_title(f"{case_name} — shear")
-            moment_axis.set_title(f"{case_name} — moment")
+            shear_axis.set_title("Shear")
+            moment_axis.set_title("Bending moment")
             shear_axis.set_xlabel("V (kN)")
             moment_axis.set_xlabel("M (kN.m)")
             shear_axis.set_ylabel("Global Z (mm)")
@@ -1000,18 +1136,17 @@ class AnalysisResultsCanvas(FigureCanvasQTAgg):
             if moment_limit > 0.0:
                 axes[1, column].set_xlim(-1.15 * moment_limit, 1.15 * moment_limit)
 
-        self.figure.suptitle(
-            "Free-face beam actions after gravity and applied loads",
-            fontsize=14,
-            fontweight="bold",
-        )
+        self.figure.suptitle("Results", fontsize=14, fontweight="bold")
         self.draw_idle()
 
 
 class RetainingWallApp(QMainWindow):
-    def __init__(self):
+    def __init__(self, license_payload=None):
         super().__init__()
-        self.setWindowTitle(APP_NAME)
+        self.license_payload = dict(license_payload or {})
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
+        if LOGO_PATH.is_file():
+            self.setWindowIcon(QIcon(str(LOGO_PATH)))
         self.resize(1500, 900)
         self.setMinimumSize(1180, 720)
 
@@ -1081,15 +1216,38 @@ class RetainingWallApp(QMainWindow):
         header = QFrame()
         header.setObjectName("HeaderFrame")
         header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(12, 10, 12, 10)
+
+        logo = QLabel()
+        logo.setObjectName("LogoLabel")
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if LOGO_PATH.is_file():
+            pixmap = QPixmap(str(LOGO_PATH))
+            logo.setPixmap(
+                pixmap.scaled(
+                    390,
+                    74,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        header_layout.addWidget(logo)
+
         title_layout = QVBoxLayout()
         title = QLabel(APP_NAME)
         title.setObjectName("AppTitle")
         subtitle = QLabel(
-            "SSPquad soil and bonded free-face beam — N, mm and seconds"
+            f"Author: {AUTHOR_NAME}  |  Version: {APP_VERSION}  |  "
+            f"Licensed to: {self.license_payload.get('licensed_to', 'Licensed user')}"
         )
         subtitle.setObjectName("AppSubtitle")
+        model_line = QLabel(
+            "SSPquad Drucker–Prager soil and bonded free-face beam — N, mm and seconds"
+        )
+        model_line.setObjectName("AppSubtitle")
         title_layout.addWidget(title)
         title_layout.addWidget(subtitle)
+        title_layout.addWidget(model_line)
         header_layout.addLayout(title_layout)
         header_layout.addStretch(1)
 
@@ -1106,7 +1264,7 @@ class RetainingWallApp(QMainWindow):
 
         self.run_button = QPushButton("Run Analysis")
         self.run_button.setToolTip(
-            "Run gravity, all applied loads and the selected material cases."
+            "Run gravity and all applied loads using the Drucker-Prager soil model."
         )
         self.run_button.clicked.connect(self.run_analysis)
         header_layout.addWidget(self.run_button)
@@ -1184,32 +1342,6 @@ class RetainingWallApp(QMainWindow):
         self.result_status.setWordWrap(True)
         self.result_status.setObjectName("InformationLabel")
         layout.addWidget(self.result_status)
-
-        self.results_table = QTableWidget(0, 6)
-        self.results_table.setHorizontalHeaderLabels(
-            [
-                "Result",
-                "Unit",
-                "Elastic",
-                "Drucker-Prager",
-                "Difference",
-                "Difference (%)",
-            ]
-        )
-        self.results_table.verticalHeader().setVisible(False)
-        self.results_table.setAlternatingRowColors(True)
-        self.results_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
-        results_header = self.results_table.horizontalHeader()
-        results_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, 6):
-            results_header.setSectionResizeMode(
-                column,
-                QHeaderView.ResizeMode.ResizeToContents,
-            )
-        self.results_table.setMaximumHeight(255)
-        layout.addWidget(self.results_table)
 
         self.results_canvas = AnalysisResultsCanvas()
         layout.addWidget(NavigationToolbar2QT(self.results_canvas, self))
@@ -1292,8 +1424,8 @@ class RetainingWallApp(QMainWindow):
         content = QWidget()
         layout = QVBoxLayout(content)
 
-        elastic_group = QGroupBox("Elastic and density properties")
-        elastic_form = QFormLayout(elastic_group)
+        stiffness_group = QGroupBox("Soil stiffness and density")
+        stiffness_form = QFormLayout(stiffness_group)
         self.fields["soil_e_kpa"] = make_double_spinbox(
             30_000.0, 0.001, 1.0e12, 2, "kPa"
         )
@@ -1303,13 +1435,13 @@ class RetainingWallApp(QMainWindow):
         self.fields["soil_density_mg_m3"] = make_double_spinbox(
             1.8, 0.0, 100.0, 4, "Mg/m³", 0.05
         )
-        elastic_form.addRow("Young's modulus", self.fields["soil_e_kpa"])
-        elastic_form.addRow(
+        stiffness_form.addRow("Young's modulus", self.fields["soil_e_kpa"])
+        stiffness_form.addRow(
             "Poisson's ratio",
             self.fields["soil_poissons_ratio"],
         )
-        elastic_form.addRow("Density", self.fields["soil_density_mg_m3"])
-        layout.addWidget(elastic_group)
+        stiffness_form.addRow("Density", self.fields["soil_density_mg_m3"])
+        layout.addWidget(stiffness_group)
 
         plastic_group = QGroupBox("Drucker–Prager properties")
         plastic_form = QFormLayout(plastic_group)
@@ -1347,15 +1479,9 @@ class RetainingWallApp(QMainWindow):
         )
         layout.addWidget(plastic_group)
 
-        self.fields["run_elastic_comparison"] = QCheckBox(
-            "Run matching ElasticIsotropic comparison"
-        )
-        self.fields["run_elastic_comparison"].setChecked(True)
-        layout.addWidget(self.fields["run_elastic_comparison"])
-
         warning = QLabel(
             "Hardening changes the physical post-yield response. H/G = 1.0 "
-            "means the hardening modulus equals the elastic shear modulus."
+            "means the hardening modulus equals the initial shear modulus."
         )
         warning.setWordWrap(True)
         warning.setObjectName("WarningLabel")
@@ -1596,8 +1722,8 @@ class RetainingWallApp(QMainWindow):
 
         analysis_note = QLabel(
             "Run Analysis creates or reads the mesh, applies gravity first, "
-            "then applies all point and distributed line loads. The elastic "
-            "comparison uses the identical mesh, beam, supports and loading."
+            "then applies all point and distributed line loads using the "
+            "Drucker–Prager soil material."
         )
         analysis_note.setWordWrap(True)
         analysis_note.setObjectName("InformationLabel")
@@ -1609,14 +1735,20 @@ class RetainingWallApp(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow, QWidget {
-                background: #f4f6f8;
-                color: #1f2933;
+                background: #F4F4F4;
+                color: #183148;
                 font-family: "Segoe UI";
                 font-size: 10pt;
             }
             QFrame#HeaderFrame {
-                background: #173f5f;
+                background: #006A4F;
                 border-radius: 7px;
+            }
+            QLabel#LogoLabel {
+                background: white;
+                border: 1px solid #EAEAEA;
+                border-radius: 5px;
+                padding: 5px 10px;
             }
             QLabel#AppTitle {
                 background: transparent;
@@ -1626,29 +1758,30 @@ class RetainingWallApp(QMainWindow):
             }
             QLabel#AppSubtitle {
                 background: transparent;
-                color: #d8e8f3;
+                color: #DFC869;
             }
             QLabel#InformationLabel {
-                background: #eaf2f8;
-                border: 1px solid #b8d2e3;
+                background: #E8F5F0;
+                border: 1px solid #00926D;
                 border-radius: 5px;
                 padding: 8px;
-                color: #294d66;
+                color: #006A4F;
             }
             QLabel#WarningLabel {
-                background: #fff5dc;
-                border: 1px solid #e5c36b;
+                background: #FFF9E8;
+                border: 1px solid #C8AE3E;
                 border-radius: 5px;
                 padding: 8px;
-                color: #6a4a00;
+                color: #183148;
             }
             QGroupBox {
                 background: white;
-                border: 1px solid #cbd5df;
+                border: 1px solid #C8AE3E;
                 border-radius: 6px;
                 margin-top: 12px;
                 padding-top: 8px;
                 font-weight: 600;
+                color: #006A4F;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
@@ -1656,38 +1789,47 @@ class RetainingWallApp(QMainWindow):
                 padding: 0 5px;
             }
             QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTextEdit,
-            QTableWidget {
+            QPlainTextEdit, QTableWidget {
                 background: white;
-                border: 1px solid #b9c5d0;
+                border: 1px solid #B8C7C1;
                 border-radius: 4px;
                 padding: 4px;
-                selection-background-color: #2878a8;
+                selection-background-color: #00926D;
             }
             QPushButton {
-                background: #2878a8;
+                background: #006A4F;
                 color: white;
                 border: none;
                 border-radius: 4px;
                 padding: 7px 12px;
                 font-weight: 600;
             }
-            QPushButton:hover { background: #1f6590; }
-            QPushButton:pressed { background: #184e70; }
-            QPushButton:disabled { background: #aab5bf; color: #e9edf0; }
+            QPushButton:hover { background: #00926D; }
+            QPushButton:pressed { background: #004655; }
+            QPushButton:disabled { background: #AAB5B1; color: #EAEAEA; }
             QTabWidget::pane {
-                border: 1px solid #cbd5df;
+                border: 1px solid #C8AE3E;
                 background: white;
             }
             QTabBar::tab {
-                background: #dfe7ed;
+                background: #EAEAEA;
                 padding: 9px 12px;
-                border: 1px solid #c3ced7;
+                border: 1px solid #D4D4D4;
             }
             QTabBar::tab:selected {
                 background: white;
-                border-bottom-color: white;
+                color: #006A4F;
+                border-bottom: 3px solid #C8AE3E;
                 font-weight: 600;
             }
+            QProgressBar {
+                background: white;
+                border: 1px solid #DFC869;
+                border-radius: 4px;
+                text-align: center;
+            }
+            QProgressBar::chunk { background: #C8AE3E; }
+            QToolBar { background: white; border-bottom: 1px solid #EAEAEA; }
             """
         )
 
@@ -2093,7 +2235,6 @@ class RetainingWallApp(QMainWindow):
                     "dilation_angle_deg",
                     "atmospheric_pressure_kpa",
                     "hardening_ratio",
-                    "run_elastic_comparison",
                 )
             },
             "beam": {
@@ -2312,9 +2453,7 @@ class RetainingWallApp(QMainWindow):
             return
 
         configuration = self.collect_configuration()
-        solver_path = Path(__file__).resolve().with_name(
-            "retaining_wall_model.py"
-        )
+        solver_path = APP_DIR / "retaining_wall_model.py"
         if not solver_path.is_file():
             QMessageBox.critical(
                 self,
@@ -2431,70 +2570,9 @@ class RetainingWallApp(QMainWindow):
             return "—"
         return f"{numeric:.6g}"
 
-    def _populate_results_table(self, result):
-        records = list(result["comparison_records"])
-        if not records:
-            summary = result["summaries"][-1]
-            records = [
-                {
-                    "Result": "Final maximum soil displacement",
-                    "Unit": "mm",
-                    "Drucker-Prager": summary[
-                        "maximum_soil_displacement_mm"
-                    ],
-                },
-                {
-                    "Result": "Final horizontal support reaction",
-                    "Unit": "N",
-                    "Drucker-Prager": summary["horizontal_reaction_n"],
-                },
-                {
-                    "Result": "Final vertical support reaction",
-                    "Unit": "N",
-                    "Drucker-Prager": summary["vertical_reaction_n"],
-                },
-                {
-                    "Result": "Final beam-base moment",
-                    "Unit": "N.mm",
-                    "Drucker-Prager": summary["beam_base_moment_nmm"],
-                },
-                {
-                    "Result": "Final maximum beam shear magnitude",
-                    "Unit": "N",
-                    "Drucker-Prager": summary["maximum_beam_shear_n"],
-                },
-                {
-                    "Result": "Final maximum beam moment magnitude",
-                    "Unit": "N.mm",
-                    "Drucker-Prager": summary["maximum_beam_moment_nmm"],
-                },
-            ]
-
-        keys = (
-            "Result",
-            "Unit",
-            "Elastic",
-            "Drucker-Prager",
-            "Difference",
-            "Difference (%)",
-        )
-        self.results_table.setRowCount(len(records))
-        for row, record in enumerate(records):
-            for column, key in enumerate(keys):
-                value = record.get(key)
-                text = str(value) if key in {"Result", "Unit"} and value else self._format_result_value(value)
-                item = QTableWidgetItem(text)
-                if column >= 2:
-                    item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignRight
-                        | Qt.AlignmentFlag.AlignVCenter
-                    )
-                self.results_table.setItem(row, column, item)
-
     @Slot(object)
     def _analysis_completed(self, result):
         self.last_analysis_result = result
-        self._populate_results_table(result)
         self.results_canvas.set_results(result)
 
         summary_lines = []
@@ -2505,11 +2583,15 @@ class RetainingWallApp(QMainWindow):
                 f"{summary['maximum_displacement_node']}; gravity equilibrium "
                 f"error {summary['gravity_equilibrium_error_percent']:.4g}%."
             )
-        self.result_status.setText("  ".join(summary_lines))
+        self.result_status.setText(
+            "  ".join(summary_lines)
+            + "  The complete numeric results are saved in "
+            "analysis_results.txt."
+        )
 
         output_directory = Path(result["output_directory"])
         if result["configuration"]["output"]["save_plots"]:
-            figure_path = output_directory / "beam_force_comparison.png"
+            figure_path = output_directory / "beam_actions.png"
             self.results_canvas.figure.savefig(
                 figure_path,
                 dpi=300,
@@ -2524,8 +2606,9 @@ class RetainingWallApp(QMainWindow):
         QMessageBox.information(
             self,
             "Analysis complete",
-            "All requested cases converged. Results and tables have been "
-            f"saved in:\n{output_directory}",
+            "All requested cases converged. The numeric results are saved in "
+            "analysis_results.txt inside:\n"
+            f"{output_directory}",
         )
 
     @Slot(str)
@@ -2599,9 +2682,20 @@ class RetainingWallApp(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName("The Project Company")
     app.setFont(QFont("Segoe UI", 10))
-    window = RetainingWallApp()
+    if LOGO_PATH.is_file():
+        app.setWindowIcon(QIcon(str(LOGO_PATH)))
+
+    licensed, message, payload = license_manager.get_license_status(APP_DIR)
+    if not licensed:
+        activation = LicenseActivationDialog(message)
+        if activation.exec() != QDialog.DialogCode.Accepted:
+            return 1
+        payload = activation.license_payload
+
+    window = RetainingWallApp(license_payload=payload)
     window.show()
     return app.exec()
 

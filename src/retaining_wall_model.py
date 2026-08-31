@@ -1,3 +1,10 @@
+"""
+Author: Mishal Mohanlal
+Date: 31/08/2026 (first working model)
+
+"""
+
+
 import ast
 import heapq
 import math
@@ -36,10 +43,6 @@ SOIL_DILATION_ANGLE_DEG = 0.0
 ATMOSPHERIC_PRESSURE_KPA = 101.0
 SOIL_HARDENING_RATIO = 1.0
 
-# Run a second model with ElasticIsotropic soil and compare it with
-# the Drucker-Prager model under the same mesh, supports and loads.
-RUN_ELASTIC_COMPARISON = True
-
 MODEL_WIDTH_MM = 1000.0
 BEAM_E_N_MM2 = 30_000.0
 BEAM_THICKNESS_MM = 300.0
@@ -73,9 +76,6 @@ SHOW_RESULTS_PLOT = True
 SAVE_RESULTS_PLOT = True
 RESULTS_PLOT_PATH = Path(__file__).resolve().with_name(
     "retaining_wall_force_diagrams.png"
-)
-COMPARISON_PLOT_PATH = Path(__file__).resolve().with_name(
-    "retaining_wall_elastic_vs_drucker_prager.png"
 )
 SHOW_NODE_TAGS_ON_PLOT = True
 
@@ -291,25 +291,15 @@ def create_opensees_sspquad_model(
     hardening_ratio=0.0,
     material_model="drucker_prager",
 ):
-    """Create a plane-strain SSPquad soil model.
-
-    ``material_model`` may be ``"drucker_prager"`` or ``"elastic"``.
-    The elastic case uses the same Young's modulus, Poisson's ratio,
-    density, thickness, body force and mesh as the nonlinear case.
-    """
+    """Create a plane-strain SSPquad Drucker-Prager soil model."""
     material_key = str(material_model).strip().lower().replace("-", "_")
     material_aliases = {
         "drucker_prager": "drucker_prager",
         "druckerprager": "drucker_prager",
         "dp": "drucker_prager",
-        "elastic": "elastic",
-        "elasticisotropic": "elastic",
-        "elastic_isotropic": "elastic",
     }
     if material_key not in material_aliases:
-        raise ValueError(
-            "material_model must be 'drucker_prager' or 'elastic'."
-        )
+        raise ValueError("material_model must be 'drucker_prager'.")
     material_key = material_aliases[material_key]
 
     if youngs_modulus <= 0.0:
@@ -318,7 +308,7 @@ def create_opensees_sspquad_model(
         raise ValueError("poissons_ratio must satisfy -1 < nu < 0.5.")
     if density < 0.0:
         raise ValueError("density cannot be negative.")
-    if material_key == "drucker_prager" and cohesion <= 0.0:
+    if cohesion <= 0.0:
         raise ValueError(
             "DruckerPrager cohesion must be positive for this model. "
             "Use a small documented regularization value and perform "
@@ -327,8 +317,7 @@ def create_opensees_sspquad_model(
     if thickness <= 0.0:
         raise ValueError("thickness must be greater than zero.")
     if (
-        material_key == "drucker_prager"
-        and not (0.0 <= dilation_angle <= friction_angle < 90.0)
+        not (0.0 <= dilation_angle <= friction_angle < 90.0)
     ):
         raise ValueError(
             "Require 0 <= dilation_angle <= friction_angle < 90 degrees."
@@ -417,34 +406,24 @@ def create_opensees_sspquad_model(
         x_model, y_model = planar_coordinates[node_tag]
         ops.node(node_tag, x_model, y_model)
 
-    if material_key == "elastic":
-        ops.nDMaterial(
-            "ElasticIsotropic",
-            int(material_tag),
-            float(youngs_modulus),
-            float(poissons_ratio),
-            float(density),
-        )
-        material_type = "ElasticIsotropic"
-    else:
-        ops.nDMaterial(
-            "DruckerPrager",
-            int(material_tag),
-            float(bulk_modulus),
-            float(shear_modulus),
-            float(yield_stress),
-            float(friction_parameter),
-            float(dilation_parameter),
-            0.0,  # Kinf
-            0.0,  # K0
-            0.0,  # delta1
-            0.0,  # delta2
-            float(hardening_modulus),
-            1.0,  # all optional hardening is isotropic
-            float(density),
-            float(atmospheric_pressure),
-        )
-        material_type = "DruckerPrager"
+    ops.nDMaterial(
+        "DruckerPrager",
+        int(material_tag),
+        float(bulk_modulus),
+        float(shear_modulus),
+        float(yield_stress),
+        float(friction_parameter),
+        float(dilation_parameter),
+        0.0,  # Kinf
+        0.0,  # K0
+        0.0,  # delta1
+        0.0,  # delta2
+        float(hardening_modulus),
+        1.0,  # all optional hardening is isotropic
+        float(density),
+        float(atmospheric_pressure),
+    )
+    material_type = "DruckerPrager"
 
     b1, b2 = map(float, body_force)
     for element_tag, connectivity, _ in quads:
@@ -1516,12 +1495,7 @@ def run_complete_analysis_case(
     maximum_iterations=100,
     progress_callback=None,
 ):
-    """Build and solve one complete elastic or Drucker-Prager case.
-
-    OpenSees stores one global domain, so every call intentionally rebuilds
-    the full model. This ensures that the two material cases have identical
-    geometry, beam, restraints and applied loads, but independent state.
-    """
+    """Build and solve one complete Drucker-Prager analysis case."""
     model_info = create_opensees_sspquad_model(
         mesh_df=mesh_df,
         youngs_modulus=youngs_modulus,
@@ -1649,227 +1623,6 @@ def _maximum_beam_actions(beam_local_forces):
         )
 
     return maximum_shear, maximum_moment
-
-
-def create_elastic_nonlinear_comparison(elastic_case, nonlinear_case):
-    """Create a side-by-side dataframe of the two solved model cases."""
-    elastic_gravity = elastic_case["gravity_results"]
-    nonlinear_gravity = nonlinear_case["gravity_results"]
-    elastic_final = elastic_case["final_results"]
-    nonlinear_final = nonlinear_case["final_results"]
-
-    elastic_gravity_step = elastic_gravity["history"][-1]
-    nonlinear_gravity_step = nonlinear_gravity["history"][-1]
-    elastic_final_step = elastic_final["history"][-1]
-    nonlinear_final_step = nonlinear_final["history"][-1]
-
-    elastic_shear, elastic_moment = _maximum_beam_actions(
-        elastic_case["final_beam_local_forces"]
-    )
-    nonlinear_shear, nonlinear_moment = _maximum_beam_actions(
-        nonlinear_case["final_beam_local_forces"]
-    )
-
-    rows = [
-        (
-            "Gravity maximum soil displacement",
-            "mm",
-            elastic_gravity_step["maximum_soil_displacement"],
-            nonlinear_gravity_step["maximum_soil_displacement"],
-        ),
-        (
-            "Gravity beam-base moment magnitude",
-            "N.mm",
-            abs(elastic_gravity["beam_base_moment_reaction"]),
-            abs(nonlinear_gravity["beam_base_moment_reaction"]),
-        ),
-        (
-            "Final maximum soil displacement",
-            "mm",
-            elastic_final_step["maximum_soil_displacement"],
-            nonlinear_final_step["maximum_soil_displacement"],
-        ),
-        (
-            "Final horizontal support reaction",
-            "N",
-            elastic_final["horizontal_support_reaction"],
-            nonlinear_final["horizontal_support_reaction"],
-        ),
-        (
-            "Final vertical support reaction",
-            "N",
-            elastic_final["vertical_support_reaction"],
-            nonlinear_final["vertical_support_reaction"],
-        ),
-        (
-            "Final beam-base moment magnitude",
-            "N.mm",
-            abs(elastic_final["beam_base_moment_reaction"]),
-            abs(nonlinear_final["beam_base_moment_reaction"]),
-        ),
-        (
-            "Final maximum beam shear magnitude",
-            "N",
-            elastic_shear,
-            nonlinear_shear,
-        ),
-        (
-            "Final maximum beam moment magnitude",
-            "N.mm",
-            elastic_moment,
-            nonlinear_moment,
-        ),
-    ]
-
-    comparison = pd.DataFrame(
-        rows,
-        columns=[
-            "Result",
-            "Unit",
-            "Elastic",
-            "Drucker-Prager",
-        ],
-    ).set_index("Result")
-
-    elastic_values = comparison["Elastic"].astype(float)
-    differences = comparison["Drucker-Prager"].astype(float) - elastic_values
-    comparison["Difference"] = differences
-    comparison["Difference (%)"] = np.where(
-        np.abs(elastic_values) > 1.0e-14,
-        100.0 * differences / np.abs(elastic_values),
-        np.nan,
-    )
-    return comparison
-
-
-def plot_elastic_nonlinear_beam_comparison(
-    mesh_df,
-    elastic_case,
-    nonlinear_case,
-    save_path=None,
-    show=True,
-):
-    """Plot elastic and Drucker-Prager beam actions side by side."""
-    coordinates = _node_coordinate_map(mesh_df)
-    cases = (elastic_case, nonlinear_case)
-    figure, axes = plt.subplots(
-        2,
-        2,
-        figsize=(12, 10),
-        sharey=True,
-        constrained_layout=True,
-    )
-
-    all_shear = [0.0]
-    all_moment = [0.0]
-
-    for column, case in enumerate(cases):
-        beam_info = case["beam_info"]
-        beam_forces = case["final_beam_local_forces"]
-        beam_to_soil = {
-            int(beam_node): int(soil_node)
-            for soil_node, beam_node
-            in beam_info["soil_to_beam_node"].items()
-        }
-        ordered_elements = sorted(
-            beam_info["beam_element_tags"],
-            key=lambda tag: min(
-                coordinates[beam_to_soil[
-                    beam_info["beam_connectivity"][tag][0]
-                ]][2],
-                coordinates[beam_to_soil[
-                    beam_info["beam_connectivity"][tag][1]
-                ]][2],
-            ),
-        )
-
-        shear_axis = axes[0, column]
-        moment_axis = axes[1, column]
-
-        for element_tag in ordered_elements:
-            beam_i, beam_j = beam_info["beam_connectivity"][element_tag]
-            z_i = coordinates[beam_to_soil[beam_i]][2]
-            z_j = coordinates[beam_to_soil[beam_j]][2]
-            forces = beam_forces[element_tag]
-
-            shear_i = forces[1] / 1000.0
-            shear_j = -forces[4] / 1000.0
-            moment_i = forces[2] / 1.0e6
-            moment_j = -forces[5] / 1.0e6
-            all_shear.extend((shear_i, shear_j))
-            all_moment.extend((moment_i, moment_j))
-
-            shear_axis.plot(
-                (shear_i, shear_j),
-                (z_i, z_j),
-                color="#187a72",
-                linewidth=2.0,
-            )
-            shear_axis.fill_betweenx(
-                (z_i, z_j),
-                (0.0, 0.0),
-                (shear_i, shear_j),
-                color="#4db6ac",
-                alpha=0.28,
-            )
-            moment_axis.plot(
-                (moment_i, moment_j),
-                (z_i, z_j),
-                color="#7756a5",
-                linewidth=2.0,
-            )
-            moment_axis.fill_betweenx(
-                (z_i, z_j),
-                (0.0, 0.0),
-                (moment_i, moment_j),
-                color="#9b7bc4",
-                alpha=0.28,
-            )
-
-        shear_axis.set_title(f"{case['case_name']} - shear")
-        moment_axis.set_title(f"{case['case_name']} - moment")
-        shear_axis.set_xlabel("Local shear V (kN)")
-        moment_axis.set_xlabel("Local bending moment M (kN.m)")
-        shear_axis.set_ylabel("Global Z (mm)")
-        moment_axis.set_ylabel("Global Z (mm)")
-
-        for axis in (shear_axis, moment_axis):
-            axis.axvline(0.0, color="#2d2d2d", linewidth=0.9)
-            axis.grid(True, alpha=0.25)
-
-    shear_limit = max(abs(value) for value in all_shear)
-    moment_limit = max(abs(value) for value in all_moment)
-    if shear_limit > 0.0:
-        axes[0, 0].set_xlim(-1.15 * shear_limit, 1.15 * shear_limit)
-        axes[0, 1].set_xlim(-1.15 * shear_limit, 1.15 * shear_limit)
-    if moment_limit > 0.0:
-        axes[1, 0].set_xlim(-1.15 * moment_limit, 1.15 * moment_limit)
-        axes[1, 1].set_xlim(-1.15 * moment_limit, 1.15 * moment_limit)
-
-    load_description = (
-        "gravity plus point loads"
-        if elastic_case["point_results"] is not None
-        else "gravity"
-    )
-    figure.suptitle(
-        "Elastic and Drucker-Prager beam-force comparison "
-        f"after {load_description}",
-        fontsize=14,
-        fontweight="bold",
-    )
-
-    if save_path is not None:
-        figure.savefig(save_path, dpi=300, bbox_inches="tight")
-        print(f"Comparison plot saved to: {save_path}")
-
-    if show:
-        plt.show()
-
-    return {
-        "figure": figure,
-        "axes": axes,
-        "save_path": save_path,
-    }
 
 
 def print_analysis_case_results(case):
@@ -2271,16 +2024,6 @@ def main():
         "maximum_iterations": 100,
     }
 
-    elastic_case = None
-    if RUN_ELASTIC_COMPARISON:
-        print("\nSolving elastic comparison model...")
-        elastic_case = run_complete_analysis_case(
-            case_name="Elastic",
-            material_model="elastic",
-            **common_case_arguments,
-        )
-        print_analysis_case_results(elastic_case)
-
     print("\nSolving Drucker-Prager model...")
     nonlinear_case = run_complete_analysis_case(
         case_name="Drucker-Prager",
@@ -2334,31 +2077,6 @@ def main():
         )
     else:
         print("\nNo point loads requested: POINT_LOADS is empty.")
-
-    if elastic_case is not None:
-        comparison = create_elastic_nonlinear_comparison(
-            elastic_case,
-            nonlinear_case,
-        )
-        print("\nElastic versus Drucker-Prager comparison")
-        print("-----------------------------------------")
-        print(
-            comparison.to_string(
-                float_format=lambda value: f"{value:.6g}"
-            )
-        )
-
-        comparison_plot_path = (
-            COMPARISON_PLOT_PATH if SAVE_RESULTS_PLOT else None
-        )
-        plot_elastic_nonlinear_beam_comparison(
-            mesh_df=mesh_df,
-            elastic_case=elastic_case,
-            nonlinear_case=nonlinear_case,
-            save_path=comparison_plot_path,
-            show=SHOW_RESULTS_PLOT,
-        )
-
 
 if __name__ == "__main__":
     main()

@@ -4,3 +4,4 @@ matplotlib>=3.8,<4
 numpy>=1.26,<3
 pandas>=2.2,<4
 openseespy==3.5.1.3
+cryptography>=42,<47
