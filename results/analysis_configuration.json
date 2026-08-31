@@ -1,0 +1,50 @@
+{
+  "configuration_version": 1,
+  "geometry": {
+    "step_path": "C:\\Users\\MishalMohanlal\\OneDrive - The Project Company\\Documents\\GitHub\\retaining wall loadings\\TIB BIN RAMP FEA 1.stp",
+    "mesh_path": "C:\\Users\\MishalMohanlal\\OneDrive - The Project Company\\Documents\\GitHub\\retaining wall loadings\\TIB BIN RAMP FEA 1.msh",
+    "recreate_mesh": false,
+    "mesh_size_min_mm": 100.0,
+    "mesh_size_max_mm": 1000.0,
+    "model_width_mm": 1000.0
+  },
+  "soil": {
+    "soil_e_kpa": 30000.0,
+    "soil_poissons_ratio": 0.3,
+    "soil_density_mg_m3": 1.8,
+    "friction_angle_deg": 32.0,
+    "cohesion_kpa": 1.0,
+    "dilation_angle_deg": 0.0,
+    "atmospheric_pressure_kpa": 101.0,
+    "hardening_ratio": 1.0,
+    "run_elastic_comparison": true
+  },
+  "beam": {
+    "beam_e_n_mm2": 30000.0,
+    "beam_thickness_mm": 300.0,
+    "beam_width_mm": 1000.0,
+    "coordinate_tolerance_mm": 1e-06
+  },
+  "analysis": {
+    "gravity_m_s2": 9.81,
+    "gravity_steps": 100,
+    "point_load_steps": 100,
+    "convergence_tolerance": 1e-05,
+    "maximum_iterations": 100
+  },
+  "output": {
+    "output_directory": "C:\\Users\\MishalMohanlal\\OneDrive - The Project Company\\Documents\\GitHub\\retaining wall loadings\\results",
+    "save_plots": true,
+    "show_results_plot": true,
+    "show_node_tags_on_results": true
+  },
+  "point_loads": [
+    {
+      "target": "Soil",
+      "node_tag": 7,
+      "magnitude": -100000.0,
+      "direction": "z"
+    }
+  ],
+  "line_loads": []
+}
