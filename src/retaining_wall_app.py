@@ -140,10 +140,11 @@ class LicenseActivationDialog(QDialog):
         self.setStyleSheet(
             """
             QDialog { background: #F4F4F4; color: #183148; font-family: 'Segoe UI'; font-size: 10pt; }
+            QLabel { color: #183148; background: transparent; }
             QLabel#ActivationLogo { background: white; border: 1px solid #EAEAEA; border-radius: 6px; padding: 10px; }
             QLabel#ActivationTitle { color: #006A4F; font-size: 18pt; font-weight: 700; }
             QLabel#WarningLabel { background: #FFF9E8; border: 1px solid #C8AE3E; border-radius: 5px; padding: 8px; color: #183148; }
-            QPlainTextEdit { background: white; border: 1px solid #C8AE3E; border-radius: 4px; padding: 5px; }
+            QPlainTextEdit { background: white; color: #111111; border: 1px solid #C8AE3E; border-radius: 4px; padding: 5px; selection-background-color: #006A4F; selection-color: white; }
             QPushButton { background: #006A4F; color: white; border: none; border-radius: 4px; padding: 8px 14px; font-weight: 600; }
             QPushButton:hover { background: #00926D; }
             QPushButton:pressed { background: #004655; }

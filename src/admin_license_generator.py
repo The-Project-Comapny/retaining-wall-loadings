@@ -38,16 +38,18 @@ def _b64_decode(value):
     return license_manager._b64_decode(value)
 
 
-def ensure_keys():
+def ensure_keys(replace_orphaned_public_key=False):
     if PRIVATE_KEY_PATH.exists() and PUBLIC_KEY_PATH.exists():
         return
 
     if PUBLIC_KEY_PATH.exists() and not PRIVATE_KEY_PATH.exists():
-        raise FileNotFoundError(
-            "The administrator private signing key is missing. Restore it "
-            f"to {PRIVATE_KEY_PATH}. A replacement key would invalidate "
-            "the public key distributed with the application."
-        )
+        if not replace_orphaned_public_key:
+            raise FileNotFoundError(
+                "The administrator private signing key is missing. Restore it "
+                f"to {PRIVATE_KEY_PATH}. A replacement key would invalidate "
+                "the public key distributed with the application."
+            )
+        PUBLIC_KEY_PATH.unlink()
 
     ADMIN_KEY_DIR.mkdir(parents=True, exist_ok=True)
     private_key = Ed25519PrivateKey.generate()
@@ -120,7 +122,27 @@ def generate_license_code(activation_request, licensed_to, expires):
 class LicenseGeneratorApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        ensure_keys()
+        self.startup_cancelled = False
+        self.withdraw()
+
+        try:
+            ensure_keys()
+        except FileNotFoundError as exc:
+            replace_keys = messagebox.askyesno(
+                "Private signing key missing",
+                f"{exc}\n\n"
+                "Do you want to create a new signing key pair now?\n\n"
+                "WARNING: licences previously issued with the old key will "
+                "no longer be accepted after the application is rebuilt with "
+                "the new public key.",
+                icon="warning",
+                parent=self,
+            )
+            if not replace_keys:
+                self.startup_cancelled = True
+                self.destroy()
+                return
+            ensure_keys(replace_orphaned_public_key=True)
 
         self.title("TPC Retaining Wall - Admin License Generator")
         self.geometry("820x620")
@@ -128,6 +150,7 @@ class LicenseGeneratorApp(tk.Tk):
         self.configure(background="#F4F4F4")
 
         self._build_ui()
+        self.deiconify()
 
     def _build_ui(self):
         self.columnconfigure(0, weight=1)
@@ -253,7 +276,8 @@ def main():
         return
 
     app = LicenseGeneratorApp()
-    app.mainloop()
+    if not app.startup_cancelled:
+        app.mainloop()
 
 
 if __name__ == "__main__":

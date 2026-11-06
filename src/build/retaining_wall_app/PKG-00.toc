@@ -1,0 +1,77 @@
+('C:\\Users\\MishalMohanlal\\OneDrive - The Project '
+ 'Company\\Documents\\GitHub\\retaining wall '
+ 'loadings\\src\\build\\retaining_wall_app\\TPC_Retaining_Wall_Analysis.pkg',
+ {'BINARY': True,
+  'DATA': True,
+  'EXECUTABLE': True,
+  'EXTENSION': True,
+  'PYMODULE': True,
+  'PYSOURCE': True,
+  'PYZ': False,
+  'SPLASH': True,
+  'SYMLINK': False},
+ [('pyi-contents-directory _internal', '', 'OPTION'),
+  ('PYZ-00.pyz',
+   'C:\\Users\\MishalMohanlal\\OneDrive - The Project '
+   'Company\\Documents\\GitHub\\retaining wall '
+   'loadings\\src\\build\\retaining_wall_app\\PYZ-00.pyz',
+   'PYZ'),
+  ('struct',
+   'C:\\Users\\MishalMohanlal\\OneDrive - The Project '
+   'Company\\Documents\\GitHub\\retaining wall '
+   'loadings\\src\\build\\retaining_wall_app\\localpycs\\struct.pyc',
+   'PYMODULE'),
+  ('pyimod01_archive',
+   'C:\\Users\\MishalMohanlal\\OneDrive - The Project '
+   'Company\\Documents\\GitHub\\retaining wall '
+   'loadings\\src\\build\\retaining_wall_app\\localpycs\\pyimod01_archive.pyc',
+   'PYMODULE'),
+  ('pyimod02_importers',
+   'C:\\Users\\MishalMohanlal\\OneDrive - The Project '
+   'Company\\Documents\\GitHub\\retaining wall '
+   'loadings\\src\\build\\retaining_wall_app\\localpycs\\pyimod02_importers.pyc',
+   'PYMODULE'),
+  ('pyimod03_ctypes',
+   'C:\\Users\\MishalMohanlal\\OneDrive - The Project '
+   'Company\\Documents\\GitHub\\retaining wall '
+   'loadings\\src\\build\\retaining_wall_app\\localpycs\\pyimod03_ctypes.pyc',
+   'PYMODULE'),
+  ('pyimod04_pywin32',
+   'C:\\Users\\MishalMohanlal\\OneDrive - The Project '
+   'Company\\Documents\\GitHub\\retaining wall '
+   'loadings\\src\\build\\retaining_wall_app\\localpycs\\pyimod04_pywin32.pyc',
+   'PYMODULE'),
+  ('pyiboot01_bootstrap',
+   'C:\\Users\\MishalMohanlal\\anaconda3\\envs\\retaining_wall_gui\\lib\\site-packages\\PyInstaller\\loader\\pyiboot01_bootstrap.py',
+   'PYSOURCE'),
+  ('pyi_rth_pkgutil',
+   'C:\\Users\\MishalMohanlal\\anaconda3\\envs\\retaining_wall_gui\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_pkgutil.py',
+   'PYSOURCE'),
+  ('pyi_rth_multiprocessing',
+   'C:\\Users\\MishalMohanlal\\anaconda3\\envs\\retaining_wall_gui\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_multiprocessing.py',
+   'PYSOURCE'),
+  ('pyi_rth_inspect',
+   'C:\\Users\\MishalMohanlal\\anaconda3\\envs\\retaining_wall_gui\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_inspect.py',
+   'PYSOURCE'),
+  ('pyi_rth_mplconfig',
+   'C:\\Users\\MishalMohanlal\\anaconda3\\envs\\retaining_wall_gui\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_mplconfig.py',
+   'PYSOURCE'),
+  ('pyi_rth_pyside6',
+   'C:\\Users\\MishalMohanlal\\anaconda3\\envs\\retaining_wall_gui\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_pyside6.py',
+   'PYSOURCE'),
+  ('pyi_rth_cryptography_openssl',
+   'C:\\Users\\MishalMohanlal\\anaconda3\\envs\\retaining_wall_gui\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks\\pyi_rth_cryptography_openssl.py',
+   'PYSOURCE'),
+  ('retaining_wall_app',
+   'C:\\Users\\MishalMohanlal\\OneDrive - The Project '
+   'Company\\Documents\\GitHub\\retaining wall '
+   'loadings\\src\\retaining_wall_app.py',
+   'PYSOURCE')],
+ 'python310.dll',
+ True,
+ False,
+ False,
+ [],
+ None,
+ None,
+ None)

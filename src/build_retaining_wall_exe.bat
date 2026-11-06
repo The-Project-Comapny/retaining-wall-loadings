@@ -20,6 +20,9 @@ if not defined PYTHON_EXE (
     exit /b 1
 )
 
+for %%I in ("%PYTHON_EXE%") do set "ENV_ROOT=%%~dpI"
+set "PATH=%ENV_ROOT%Library\bin;%ENV_ROOT%DLLs;%ENV_ROOT%;%PATH%"
+
 echo Installing the executable build dependency...
 "%PYTHON_EXE%" -m pip install -r requirements-build.txt
 if errorlevel 1 goto :build_failed
